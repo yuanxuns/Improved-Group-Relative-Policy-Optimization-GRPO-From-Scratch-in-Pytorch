@@ -1,0 +1,6 @@
+*.ipynb
+logs/*
+Countdown-Tasks-3to4*
+src/weights/*
+*__pycache__*
+*.pyc
