@@ -71,12 +71,13 @@ class CountdownDataset(Dataset):
     
     def tokenize_prefix(self, nums:List[int], target: int)->Dict[str, Any]:
       user_message = USER_TEMPLATE.format(numbers=nums, target=target)
+      reponse_prompt = RESPONSE_PROMPT.format(numbers=nums, target=target)
       prefix_text = self.tokenizer.encode_chat_with_response_prompt(
         messages = [
           {"role": "system", "content": SYSTEM_MESSAGE},
           {"role": "user", "content": user_message}
         ],
-        prompt = RESPONSE_PROMPT,
+        prompt = reponse_prompt,
       )
       tokens = self.tokenizer.tokenize(prefix_text)
       return {
