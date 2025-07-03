@@ -65,7 +65,9 @@ def single_step_rollout(
         device=device,
         dtype=dtype,
     )
+    # (B, total_len)
     tokens = torch.full((batch_size, total_len), pad_token_id, dtype=torch.long, device=device)
+    # fill the prefix tokens
     for k, t in enumerate(prefix_token_ids):
         offset = k * num_answer_per_question
         for i in range(num_answer_per_question):
@@ -91,14 +93,17 @@ def single_step_rollout(
             end="",
         )
         with torch.autocast(device_type=device.type, dtype=dtype):
+          # (B, tgt_len, vocab_size)
             logits = model.inference(tokens[:, prev_pos:cur_pos], prev_pos)
-        # (B, tgt_len, vocab_size) -> (B, 1)
+        # (B, tgt_len, vocab_size) -> (B, vocab_size)
         probs = torch.softmax(logits[:, -1], dim=-1)
+        # (B, 1)
         next_token = torch.multinomial(probs, num_samples=1)
         # (B, 1) -> (B)
         next_token = next_token.reshape(-1)
+        # (B)
         next_token = torch.where(
-            input_text_mask[:, cur_pos], tokens[:, cur_pos], next_token
+            input_text_mask[:, cur_pos] , tokens[:, cur_pos], next_token
         )
         # if an rollout is finished, we fill the rest of the tokens with pad_token_id
         next_token = torch.where(is_finished, pad_token_id, next_token)
@@ -196,7 +201,6 @@ def update_policy(
     instances = normalize_rewards_per_group(instances)
     # sort instances by token length for efficient (micro-)batching
     instances.sort(key=lambda x: len(x.prefix_token_ids) + len(x.generated_token_ids))
-    num_micro_batches = math.ceil(len(instances) / micro_batch_size)
     num_target_tokens = sum(len(instance.generated_token_ids) for instance in instances)
     entropy = 0.0
 
@@ -213,34 +217,45 @@ def update_policy(
             for instance in batch_instances
         ]
         batch_max_length = max(batch_lengths)
+        # (microB, batch_max_length)
         batch_token_ids = [
             instance.prefix_token_ids
             + instance.generated_token_ids
             + [pad_token_id] * (batch_max_length - batch_lengths[i])
             for i, instance in enumerate(batch_instances)
         ]
+        # (microB, batch_max_length)
         batch_masks = [
             [0] * len(instance.prefix_token_ids)
             + [1] * len(instance.generated_token_ids)
             + [0] * (batch_max_length - batch_lengths[i])
             for i, instance in enumerate(batch_instances)
         ]
+        # (microB)
         batch_advantages = [instance.reward for instance in batch_instances]
+        # (microB, batch_max_length)
         batch_token_ids = torch.tensor(batch_token_ids, device=device, dtype=torch.long)
+        # (microB, batch_max_length)
         batch_masks = torch.tensor(batch_masks, device=device, dtype=torch.bool)
+        # (microB)
         batch_advantages = torch.tensor(
             batch_advantages, device=device, dtype=torch.float32
         )
 
         with torch.autocast(device_type=device.type, dtype=dtype):
+            # (microB, batch_max_length-1)
             input_token_ids = batch_token_ids[:, :-1]
+            # (microB, batch_max_length-1)
             target_token_ids = batch_token_ids[:, 1:]
+            # (microB, batch_max_length-1)
             target_masks = batch_masks[:, 1:]
+            # (microB, batch_max_length-1, vocab_size)
             logits = model.forward(input_token_ids).float()
 
+        # (microB*batch_max_length-1) -> (microB, batch_max_length-1)
         log_probs = -torch.nn.functional.cross_entropy(
-            logits.reshape(-1, logits.size(-1)),
-            target_token_ids.reshape(-1),
+            logits.reshape(-1, logits.size(-1)), # (microB*batch_max_length-1, vocab_size)
+            target_token_ids.reshape(-1), # (microB*batch_max_length-1)
             ignore_index=pad_token_id,
             reduction="none",
         ).reshape(input_token_ids.shape[0], -1)
@@ -248,9 +263,10 @@ def update_policy(
         with torch.no_grad():
             token_entropy = compute_entropy(logits)
             entropy = entropy + (token_entropy * target_masks).sum() / num_target_tokens
-
+        
+        # (microB, batch_max_length-1) * (microB, 1) -> (microB, batch_max_length-1)
         obj = log_probs * batch_advantages[:, None]
-        # per-token objective
+        # per-token objective, float
         obj = (obj * target_masks).sum() / num_target_tokens
         loss = -obj
         loss.backward()

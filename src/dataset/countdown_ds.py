@@ -10,17 +10,23 @@ SYSTEM_MESSAGE = (
   "provide the user with an answer."
 )
 USER_TEMPLATE = (
-  "Using the provided information, answer the question in a concise manner. "
-  "Given the numbers {numbers} and the target {target}, you can use the limited "
-  "arithmetic operations +, -, *, /, (, ) and given numbers to "
+  "Using the provided information, answer the question. "
+  "Given a list of numbers {numbers} and the target {target}, you can use the limited "
+  "arithmetic operations +, -, *, /, (, ) and numbers to "
   "create an equation that equals the target. Each given number must be used exactly once, and feel free to change the order of numbers if needed. "
   "You can only selectively use the provided arithmetic operations. You do not have to use all provided "
   " arithmetic operations, and feel free to use any given arithmetic operations multiple times. "
-  "Show your reasoning processes step by step in the <think></think> tags. "
-  "The reasoning steps should include intermediate values, and verifies the final equation value equals the target. Finally, please return the answer "
-  "in <answer> </answer> tags. For example, <answer>(1 + 3) / 2 * 6</answer>. "
+  "Show your reasoning processes in the <think></think> tags. "
+  "The reasoning steps should keep trying multiple attempts until the equation equals the target. Finally, return the correct equation "
+  "in <answer> </answer> tags. For example, "
+  "suppose given a list of numbers [3 1 6 2] and the target 12. <think>Given numbers [3 1 6 2] and the target 12, I will try to find an equation that equals the target. " 
+  "The first try, 3 * 6 + 1 - 2 = 17, which is not equal to the target 12. Continue. "
+  "The second try,  6 + (2 * 3 - 1) = 11, which is not equal to the target 12. Continue. "
+  "The third try, (1 + 3) / 2 * 6, which is equal to the target. Succeed and return the equation."
+  "</think> "
+  "<answer>(1 + 3) / 2 * 6</answer>."
 )
-RESPONSE_PROMPT = "Let me solve this step by step.\n<think>"
+RESPONSE_PROMPT = "Given a list of numbers {numbers} and the target {target}. Let me solve this step by step.<think>"
 
 @dataclass
 class MiniBatch:
