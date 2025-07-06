@@ -4,6 +4,7 @@ from src.tokenizers.tokenizer import Tokenizer
 import pandas as pd
 from typing import List, Dict, Optional, Any
 from dataclasses import dataclass
+import torch
 
 SYSTEM_MESSAGE = (
   "You are a helpful assistant. You first reason about the given task, then "
@@ -11,23 +12,14 @@ SYSTEM_MESSAGE = (
 )
 USER_TEMPLATE = (
   "Using the provided information, answer the question. "
-  "Given a list of numbers {numbers} and the target {target}, you can use the limited "
-  "arithmetic operations +, -, *, /, (, ) and numbers to "
-  "create an equation that equals the target. Each given number must be used exactly once, and feel free to change the order of numbers if needed. "
-  "You can only selectively use the provided arithmetic operations. You do not have to use all provided "
-  " arithmetic operations, and feel free to use any given arithmetic operations multiple times. "
-  "Show your reasoning processes in the <think></think> tags. "
-  "The reasoning steps should keep trying multiple attempts until the equation equals the target. Finally, return the correct equation "
+  "Given a list of numbers {numbers} and the target {target}, you can use the given numbers exactly once (feel free to change the order if needed), and "
+  "freely use the given arithmetic operations: brackets (), addition +, subtraction -, multiplication * and division / to "
+  "create an equation whose outcome equals the target. "
+  "Show your reasoning processes and verifies the answer in the <think></think> tags. "
+  "Finally, only return the correct verified equation "
   "in <answer> </answer> tags."
-  "\n \n For example, given a list of numbers [3 1 6 2] and the target 12."
-  "\n<think>Given numbers [3 1 6 2] and the target 12, I will try to find an equation that equals the target. " 
-  "\nThe first try, 3 * 6 + 1 - 2 = 17, which is not equal to the target 12. Continue. "
-  "\nThe second try,  6 + (2 * 3 - 1) = 11, which is not equal to the target 12. Continue. "
-  "\nThe third try, (1 + 3) / 2 * 6, which is equal to the target. Succeed and return the equation."
-  "</think> "
-  "\n<answer>(1 + 3) / 2 * 6</answer>."
 )
-RESPONSE_PROMPT = "Given a list of numbers {numbers} and the target {target}. Let me solve this step by step.\n<think>"
+RESPONSE_PROMPT = "Let me solve this step by step. <think>"
 
 @dataclass
 class MiniBatch:
@@ -50,6 +42,8 @@ class Instance:
     is_finished: bool
     reward: float
     reward_info: Dict[str, float]
+    old_per_token_log_probs: torch.Tensor
+    ref_per_token_log_probs: torch.Tensor
     
 
 class CountdownDataset(Dataset):

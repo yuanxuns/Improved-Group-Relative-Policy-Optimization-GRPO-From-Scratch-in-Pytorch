@@ -2,7 +2,7 @@ model:
   pretrained_model_path: "src/weights/Qwen2.5-0.5B-Instruct"
   device: "cuda"
   dtype: "bfloat16"
-  preload_ckpt_file: "ckpt_000100.pt"
+  preload_ckpt_file: None #"ckpt_002400.pt"
 data:
   path: "Countdown-Tasks-3to4/data"
   test_size: 128
@@ -12,11 +12,11 @@ rewards:
 training:
   random_seed: 1337
   max_prompt_len: 256
-  max_gen_len: 512
+  max_gen_len: 1024
   batch_size: 256
   num_questions_per_batch: 32
   # Number of examples per gradient accumulation step
-  micro_batch_size: 2
+  micro_batch_size: 3
   max_grad_norm: 1.0
   learning_rate: 1.0e-5
   weight_decay: 0.0
@@ -25,6 +25,12 @@ training:
   log_dir: "logs"
   skip_unfinished_instances: true
   ckpt_save_interval: 100
-  eval_interval: 10
+  eval_interval: 5
+  ref_model_update_interval: 10
   # save GPU memory by offloading the optimizer states to CPU
   memory_efficient_adamw: true
+  beta: 0.05
+  eps_low: 0.2
+  eps_high: 0.28
+  temperature: 1.1
+  token_entropy_percentile_threshold: 0.5

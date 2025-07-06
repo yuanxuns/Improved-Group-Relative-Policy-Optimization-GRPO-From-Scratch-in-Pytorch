@@ -1,10 +1,10 @@
 import torch
 import torch.nn as nn
 from pathlib import Path
- 
+
 import gc
 from collections import defaultdict
-import numpy as np 
+import numpy as np
 import dataclasses
 import math
 
@@ -14,32 +14,37 @@ from src.dataset.countdown_ds import Instance, MiniBatch
 from typing import Callable, List
 from src.tokenizers.tokenizer import Tokenizer
 
-def build_and_load_model(config, device:torch.device):
 
-    model = Transformer.from_pretrained(config["model"]["pretrained_model_path"], device=device)
+def build_and_load_model(config, device: torch.device, build_optimzier: bool = True):
+
+    model = Transformer.from_pretrained(
+        config["model"]["pretrained_model_path"], device=device
+    )
     pretrained_model_path = Path(config["model"]["pretrained_model_path"])
     if config["model"]["preload_ckpt_file"] is not None:
-        file_path = Path(config["training"]["ckpt_dir"]) / config["model"]["preload_ckpt_file"]
+        file_path = (
+            Path(config["training"]["ckpt_dir"]) / config["model"]["preload_ckpt_file"]
+        )
         if file_path.exists():
             print(f"Loading model weights from {file_path}")
-            model.load_state_dict(
-                torch.load(file_path, weights_only=True)
-            )
-        
-    optimizer = MemoryEfficientAdamW(
-        model.parameters(),
-        lr=config["training"]["learning_rate"],
-        weight_decay=config["training"]["weight_decay"],
-        betas=config["training"]["betas"],
-        enabled=config["training"]["memory_efficient_adamw"],
-    )
-    
+            model.load_state_dict(torch.load(file_path, weights_only=True))
+    optimizer = None
+    if build_optimzier:
+        optimizer = MemoryEfficientAdamW(
+            model.parameters(),
+            lr=config["training"]["learning_rate"],
+            weight_decay=config["training"]["weight_decay"],
+            betas=config["training"]["betas"],
+            enabled=config["training"]["memory_efficient_adamw"],
+        )
+
     return model, optimizer
 
 
 @torch.no_grad()
 def single_step_rollout(
     model: Transformer,
+    ref_model: Transformer,
     batch: MiniBatch,
     tokenizer: Tokenizer,
     max_gen_len: int,
@@ -52,7 +57,7 @@ def single_step_rollout(
     end_token = tokenizer.eos_token
     end_token_id = tokenizer.eos_token_id
     pad_token_id = tokenizer.pad_token_id
-    
+
     prefix_token_ids = batch.prefix_token_ids
     question_size = len(batch.prefix_text)
     batch_size = question_size * num_answer_per_question
@@ -66,7 +71,9 @@ def single_step_rollout(
         dtype=dtype,
     )
     # (B, total_len)
-    tokens = torch.full((batch_size, total_len), pad_token_id, dtype=torch.long, device=device)
+    tokens = torch.full(
+        (batch_size, total_len), pad_token_id, dtype=torch.long, device=device
+    )
     # fill the prefix tokens
     for k, t in enumerate(prefix_token_ids):
         offset = k * num_answer_per_question
@@ -79,7 +86,7 @@ def single_step_rollout(
     #     start = k * num_answer_per_question
     #     end = start + num_answer_per_question
     #     tokens[start:end, : t_tensor.size(0)] = t_tensor
-    
+
     prev_pos = 0
     # (B, total_len)
     input_text_mask = tokens != pad_token_id
@@ -93,8 +100,11 @@ def single_step_rollout(
             end="",
         )
         with torch.autocast(device_type=device.type, dtype=dtype):
-          # (B, tgt_len, vocab_size)
-            logits = model.inference(tokens[:, prev_pos:cur_pos], prev_pos)
+            # (B, tgt_len, vocab_size)
+            logits = (
+                model.inference(tokens[:, prev_pos:cur_pos], prev_pos)
+                / config["training"]["temperature"]
+            )
         # (B, tgt_len, vocab_size) -> (B, vocab_size)
         probs = torch.softmax(logits[:, -1], dim=-1)
         # (B, 1)
@@ -103,7 +113,7 @@ def single_step_rollout(
         next_token = next_token.reshape(-1)
         # (B)
         next_token = torch.where(
-            input_text_mask[:, cur_pos] , tokens[:, cur_pos], next_token
+            input_text_mask[:, cur_pos], tokens[:, cur_pos], next_token
         )
         # if an rollout is finished, we fill the rest of the tokens with pad_token_id
         next_token = torch.where(is_finished, pad_token_id, next_token)
@@ -141,6 +151,28 @@ def single_step_rollout(
                 end_token=end_token,
                 config=config,
             )
+
+            with torch.no_grad():
+                batch_token_ids = torch.tensor(
+                    [batch.prefix_token_ids[i] + generated_token_ids],
+                    device=device,
+                    dtype=torch.int64,
+                )
+                old_per_token_log_probs = get_per_token_logps_and_entropies(
+                    model,
+                    batch_token_ids,
+                    pad_token_id,
+                    compute_entropies=False,
+                    temperature=config["training"]["temperature"],
+                )["per_token_logps"]
+                ref_per_token_log_probs = get_per_token_logps_and_entropies(
+                    ref_model,
+                    batch_token_ids,
+                    pad_token_id,
+                    compute_entropies=False,
+                    temperature=config["training"]["temperature"],
+                )["per_token_logps"]
+
             instance = Instance(
                 prefix_text=batch.prefix_text[i],
                 full_text=batch.prefix_text[i] + generated_text,
@@ -150,11 +182,15 @@ def single_step_rollout(
                 is_finished=is_finished_list[idx],
                 reward=rewards["reward"],
                 reward_info=rewards["reward_info"],
+                old_per_token_log_probs=old_per_token_log_probs,
+                ref_per_token_log_probs=ref_per_token_log_probs,
             )
             instances.append(instance)
     # clear the output line
     print("\r", end=" " * 100, flush=True)
+    torch.cuda.empty_cache()
     return instances
+
 
 def normalize_rewards_per_group(instances: List[Instance]) -> List[Instance]:
     """Normalize rewards per group. A group is defined by the prefix."""
@@ -172,6 +208,66 @@ def normalize_rewards_per_group(instances: List[Instance]) -> List[Instance]:
             output.append(instance)
     return output
 
+
+def get_per_token_entropies_from_logits(logits, chunk_size: int = 1) -> torch.Tensor:
+    """
+    Compute the Shannon entropy (in nats) for each row of *logits* without
+    materialising the full soft-max in memory.
+    The batch dimension is processed in chunks of size `chunk_size` so that
+    only a subset of rows is expanded to probabilities at any one time.
+    Args:
+        logits (`torch.Tensor`):
+            Logits tensor of shape `(..., num_classes)`. Entropy is taken along the last axis; all
+            leading dimensions are preserved.
+        chunk_size (`int`, *optional*, defaults to `1`):
+            Number of rows to process per iteration.
+    Returns:
+        `torch.Tensor`:
+            Entropy values with shape `logits.shape[:-1]`.
+    """
+    per_token_entropies = []
+    for logits_chunk in logits.split(chunk_size, dim=0):
+        logps = torch.nn.functional.log_softmax(logits_chunk, dim=-1)
+        chunk_entropy = -(torch.exp(logps) * logps).sum(-1)
+        per_token_entropies.extend(chunk_entropy)
+
+    per_token_entropies = torch.stack(per_token_entropies)
+    return per_token_entropies
+
+
+def get_per_token_logps_and_entropies(
+    model,
+    batch_token_ids,
+    pad_token_id,
+    compute_logps: bool = True,
+    compute_entropies: bool = True,
+    temperature: float = 1.0,
+):
+    per_token_logps = None
+    per_token_entropies = None
+
+    # (B, batch_len-1, vocab_size)
+    logits = model.forward(batch_token_ids[:, :-1]) / temperature
+
+    if compute_entropies:
+        with torch.no_grad():
+            # (B, batch_len-1)
+            per_token_entropies = get_per_token_entropies_from_logits(logits)
+
+    if compute_logps:
+        # (B * (batch_len-1)) -> (B, batch_len-1)
+        per_token_logps = -torch.nn.functional.cross_entropy(
+            logits.reshape(-1, logits.size(-1)),  # (B * (batch_len-1), vocab_size)
+            batch_token_ids[:, 1:].reshape(-1),  # (B * (batch_len-1))
+            ignore_index=pad_token_id,
+            reduction="none",
+        ).reshape(batch_token_ids.shape[0], -1)
+    return {
+        "per_token_logps": per_token_logps,
+        "per_token_entropies": per_token_entropies,
+    }
+
+
 def compute_entropy(logits: torch.Tensor) -> torch.Tensor:
     """
     The formula logsumexp(logits) - sum(probs * logits) is equivalent to the definition of Shannon entropy, H(P) = - sum(P * log(P)), where P is the probability distribution obtained from softmax.
@@ -181,28 +277,33 @@ def compute_entropy(logits: torch.Tensor) -> torch.Tensor:
     Substituting into the entropy formula: H(P) = - sum(P * (logits - logsumexp(logits))).
     H(P) = - sum(P * logits) + sum(P * logsumexp(logits)).
     Since the sum of probabilities is 1 (sum(P) = 1), the second term simplifies to logsumexp(logits).
-    Thus, H(P) = logsumexp(logits) - sum(P * logits). 
+    Thus, H(P) = logsumexp(logits) - sum(P * logits).
     """
     probs = torch.nn.functional.softmax(logits, dim=-1)
     entropy = torch.logsumexp(logits, dim=-1) - torch.sum(probs * logits, dim=-1)
     return entropy
-    
+
+
 def update_policy(
     model,
     optimizer,
     instances: List[Instance],
-    micro_batch_size: int,
     pad_token_id: int,
-    max_grad_norm: float,
     device: torch.device,
     dtype: torch.dtype,
+    config,
 ):
     """Update the policy using the GRPO algorithm."""
+    if len(instances) == 0:
+        print("No instances to update policy.")
+        return {"loss": 0.0, "grad_norm": 0.0, "entropy": 0.0}
+
     instances = normalize_rewards_per_group(instances)
     # sort instances by token length for efficient (micro-)batching
-    instances.sort(key=lambda x: len(x.prefix_token_ids) + len(x.generated_token_ids))
+    # instances.sort(key=lambda x: len(x.prefix_token_ids) + len(x.generated_token_ids))
     num_target_tokens = sum(len(instance.generated_token_ids) for instance in instances)
     entropy = 0.0
+    micro_batch_size = config["training"]["micro_batch_size"]
 
     for i in range(0, len(instances), micro_batch_size):
         print(
@@ -217,63 +318,130 @@ def update_policy(
             for instance in batch_instances
         ]
         batch_max_length = max(batch_lengths)
+
         # (microB, batch_max_length)
-        batch_token_ids = [
-            instance.prefix_token_ids
-            + instance.generated_token_ids
-            + [pad_token_id] * (batch_max_length - batch_lengths[i])
-            for i, instance in enumerate(batch_instances)
-        ]
+        batch_token_ids = torch.tensor(
+            [
+                instance.prefix_token_ids
+                + instance.generated_token_ids
+                + [pad_token_id] * (batch_max_length - batch_lengths[i])
+                for i, instance in enumerate(batch_instances)
+            ],
+            device=device,
+            dtype=torch.int64,
+        )
+
+        # (microB, batch_max_length - 1)
+        batch_old_per_token_log_probs = torch.cat(
+            [
+                torch.nn.functional.pad(
+                    instance.old_per_token_log_probs,
+                    (
+                        0,
+                        batch_max_length - 1 - instance.old_per_token_log_probs.size(1),
+                    ),
+                    value=0.0,
+                    mode="constant",
+                )
+                for instance in batch_instances
+            ],
+            dim=0,
+        ).to(device=device, dtype=dtype)
+
+        # (microB, batch_max_length - 1)
+        batch_ref_per_token_log_probs = torch.cat(
+            [
+                torch.nn.functional.pad(
+                    instance.ref_per_token_log_probs,
+                    (
+                        0,
+                        batch_max_length - 1 - instance.ref_per_token_log_probs.size(1),
+                    ),
+                    value=0.0,
+                    mode="constant",
+                )
+                for instance in batch_instances
+            ],
+            dim=0,
+        ).to(device=device, dtype=dtype)
+
         # (microB, batch_max_length)
-        batch_masks = [
-            [0] * len(instance.prefix_token_ids)
-            + [1] * len(instance.generated_token_ids)
-            + [0] * (batch_max_length - batch_lengths[i])
-            for i, instance in enumerate(batch_instances)
-        ]
-        # (microB)
-        batch_advantages = [instance.reward for instance in batch_instances]
-        # (microB, batch_max_length)
-        batch_token_ids = torch.tensor(batch_token_ids, device=device, dtype=torch.long)
-        # (microB, batch_max_length)
-        batch_masks = torch.tensor(batch_masks, device=device, dtype=torch.bool)
+        batch_masks = torch.tensor(
+            [
+                [0] * len(instance.prefix_token_ids)
+                + [1] * len(instance.generated_token_ids)
+                + [0] * (batch_max_length - batch_lengths[i])
+                for i, instance in enumerate(batch_instances)
+            ],
+            device=device,
+            dtype=torch.bool,
+        )
+
         # (microB)
         batch_advantages = torch.tensor(
-            batch_advantages, device=device, dtype=torch.float32
+            [instance.reward for instance in batch_instances],
+            device=device,
+            dtype=dtype,
         )
 
         with torch.autocast(device_type=device.type, dtype=dtype):
-            # (microB, batch_max_length-1)
-            input_token_ids = batch_token_ids[:, :-1]
-            # (microB, batch_max_length-1)
-            target_token_ids = batch_token_ids[:, 1:]
-            # (microB, batch_max_length-1)
-            target_masks = batch_masks[:, 1:]
-            # (microB, batch_max_length-1, vocab_size)
-            logits = model.forward(input_token_ids).float()
+            result = get_per_token_logps_and_entropies(
+                model,
+                batch_token_ids,
+                pad_token_id,
+                temperature=config["training"]["temperature"],
+            )
+        # (microB, batch_max_length-1)
+        per_token_logps = result["per_token_logps"]
+        # (microB, batch_max_length-1)
+        per_token_entropies = result["per_token_entropies"]
 
-        # (microB*batch_max_length-1) -> (microB, batch_max_length-1)
-        log_probs = -torch.nn.functional.cross_entropy(
-            logits.reshape(-1, logits.size(-1)), # (microB*batch_max_length-1, vocab_size)
-            target_token_ids.reshape(-1), # (microB*batch_max_length-1)
-            ignore_index=pad_token_id,
-            reduction="none",
-        ).reshape(input_token_ids.shape[0], -1)
+        entropy_threshold = torch.quantile(
+            per_token_entropies.flatten().float(),
+            config["training"]["token_entropy_percentile_threshold"],
+        )
+        entropy_mask = per_token_entropies >= entropy_threshold
 
-        with torch.no_grad():
-            token_entropy = compute_entropy(logits)
-            entropy = entropy + (token_entropy * target_masks).sum() / num_target_tokens
-        
-        # (microB, batch_max_length-1) * (microB, 1) -> (microB, batch_max_length-1)
-        obj = log_probs * batch_advantages[:, None]
-        # per-token objective, float
-        obj = (obj * target_masks).sum() / num_target_tokens
-        loss = -obj
+        # (microB, batch_max_length-1)
+        target_masks = batch_masks[:, 1:]
+
+        entropy = (
+            entropy + (per_token_entropies * target_masks).sum() / num_target_tokens
+        )
+
+        # (microB, batch_max_length-1)
+        cur_old_policy_ratio = torch.exp(
+            per_token_logps - batch_old_per_token_log_probs
+        )
+        per_token_loss1 = cur_old_policy_ratio * batch_advantages[:, None]
+        per_token_loss2 = (
+            torch.clamp(
+                cur_old_policy_ratio,
+                1 - config["training"]["eps_low"],
+                1 + config["training"]["eps_high"],
+            )
+            * batch_advantages[:, None]
+        )
+
+        # (microB, batch_max_length-1)
+        ref_cur_policy_ratio = torch.exp(
+            batch_ref_per_token_log_probs - per_token_logps
+        )
+        per_token_kl = (
+            ref_cur_policy_ratio - (batch_ref_per_token_log_probs - per_token_logps) - 1
+        )
+        per_token_loss = (
+            torch.min(per_token_loss1, per_token_loss2)
+            - config["training"]["beta"] * per_token_kl
+        )
+        per_token_loss = per_token_loss * target_masks * entropy_mask
+        loss = -per_token_loss.sum() / num_target_tokens
+
         loss.backward()
 
     # update the policy
     grad_norm = torch.nn.utils.clip_grad_norm_(
-        model.parameters(), max_norm=max_grad_norm
+        model.parameters(), max_norm=config["training"]["max_grad_norm"]
     )
     optimizer.step()
     optimizer.zero_grad(set_to_none=True)
@@ -282,5 +450,3 @@ def update_policy(
         "grad_norm": grad_norm.item(),
         "entropy": entropy.item(),
     }
-
-    

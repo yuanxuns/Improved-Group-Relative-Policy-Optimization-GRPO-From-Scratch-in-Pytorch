@@ -1,5 +1,6 @@
 
 from pathlib import Path
+from weakref import ref
 import torch
 from src.train.utils import dtype_map
 from datetime import datetime
@@ -51,7 +52,9 @@ def train(config):
         batch_size=NUM_QUESTIONS_PER_BATCH,
     )
 
-    model, optimizer = build_and_load_model(config, device)
+    model, optimizer = build_and_load_model(config, device, True)
+    ref_model, _ = build_and_load_model(config, device, False)
+    # print(torch.cuda.memory_summary(abbreviated=True))
 
 
     start_time = time.time()
@@ -59,8 +62,11 @@ def train(config):
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
     for step, batch in enumerate(train_dataloader, start=1):
+        ref_model.to(device)
+        ref_model.eval()
         instances = single_step_rollout(
             model=model,
+            ref_model=ref_model,
             tokenizer=tokenizer,
             batch=batch,
             max_gen_len=config["training"]["max_gen_len"],
@@ -70,6 +76,8 @@ def train(config):
             dtype=dtype,
             config=config,
         )
+        ref_model.cpu()
+        torch.cuda.empty_cache()
         
         if config["training"]["skip_unfinished_instances"]:
             instances = [instance for instance in instances if instance.is_finished]
@@ -78,11 +86,10 @@ def train(config):
             model=model,
             optimizer=optimizer,
             instances=instances,
-            micro_batch_size=config["training"]["micro_batch_size"],
             pad_token_id=tokenizer.pad_token_id,
-            max_grad_norm=config["training"]["max_grad_norm"],
             device=device,
             dtype=dtype,
+            config=config,
         )
         # synchronize CUDA to ensure all operations are complete before measuring time
         torch.cuda.synchronize()
@@ -117,10 +124,15 @@ def train(config):
             f"entropy: {entropy:.2f}"
         )
         if step % config["training"]["eval_interval"] == 0:
-            eval_success_rate = evaluate(model, tokenizer, device, dtype, config)
+            eval_success_rate = evaluate(model, ref_model,tokenizer, device, dtype, config)
             print(f"\rEval success rate: {eval_success_rate:.2f}" + " " * 100)
             tb_writer.add_scalar("success_rate/eval", eval_success_rate, step)
 
+        if step % config["training"]["ref_model_update_interval"] == 0:
+            # Update the reference model with the current model's state
+            ref_model.load_state_dict(model.state_dict())
+            print(f"Updated reference model at step {step}")
+  
         tb_writer.add_scalar("loss", loss, step)
         tb_writer.add_scalar("mean_reward", mean_reward, step)
         tb_writer.add_scalar("std_reward", std_reward, step)

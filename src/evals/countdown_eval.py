@@ -6,7 +6,7 @@ from src.models.grpo.grpo import single_step_rollout
 from src.dataset.countdown_ds import CountdownDataset, collate_fn
 from src.models.grpo.reward import compute_rewards
 
-def evaluate(model, tokenizer, device, dtype, config):
+def evaluate(model, ref_model,tokenizer, device, dtype, config):
     test_dataset = CountdownDataset(
         data_path=config["data"]["path"],
         tokenizer=tokenizer,
@@ -25,9 +25,12 @@ def evaluate(model, tokenizer, device, dtype, config):
         drop_last=False,
     )
     success = []
+    ref_model.to(device)
+    ref_model.eval()
     for batch in dataloader:
         episodes = single_step_rollout(
             model=model,
+            ref_model=ref_model,
             tokenizer=tokenizer,
             batch=batch,
             max_gen_len=config["training"]["max_gen_len"] * 2,
@@ -38,5 +41,7 @@ def evaluate(model, tokenizer, device, dtype, config):
             config=config,
         )
         success.extend([episode.reward_info["answer_reward"] for episode in episodes])
+    ref_model.cpu()
+    torch.cuda.empty_cache()
     return np.mean(success)
   
