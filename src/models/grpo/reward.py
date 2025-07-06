@@ -1,6 +1,7 @@
 import re
 from typing import Any, Dict, List, Optional
 
+
 def format_reward_function(response: str, end_token: Optional[str] = None) -> float:
     """
     Checks if the response follows the format <think>...</think><answer>...</answer>
@@ -29,8 +30,8 @@ def format_reward_function(response: str, end_token: Optional[str] = None) -> fl
         reward += 0.5
 
     return reward
-  
-  
+
+
 def answer_reward_function(
     response: str, numbers: List[int] = None, target: int = None
 ) -> float:
@@ -64,11 +65,12 @@ def answer_reward_function(
         pass
 
     return 0.0
-  
+
+
 def compute_rewards(
     response: str,
-    numbers: List[int] ,
-    target: int ,
+    numbers: List[int],
+    target: int,
     end_token: str,
     config,
 ) -> Dict[str, Any]:
@@ -78,7 +80,8 @@ def compute_rewards(
     format_reward = format_reward_function("<think>" + response, end_token)
     answer_reward = answer_reward_function(response, numbers, target)
     return {
-        "reward": format_reward * config["rewards"]["format"] + answer_reward* config["rewards"]["answer"],
+        "reward": format_reward * config["rewards"]["format"]
+        + answer_reward * config["rewards"]["answer"],
         "reward_info": {
             "format_reward": format_reward,
             "answer_reward": answer_reward,

@@ -16,11 +16,21 @@ from src.tokenizers.tokenizer import Tokenizer
 
 
 def build_and_load_model(config, device: torch.device, build_optimzier: bool = True):
+    """
+    Builds a model and optimizer from a config dictionary.
 
+    Args:
+        config: A dictionary with configuration options.
+        device: torch.device.
+        build_optimizer: Whether to build an optimizer. Defaults to True.
+
+    Returns:
+        A tuple containing the model and optimizer. The optimizer is None if build_optimizer is False.
+    """
     model = Transformer.from_pretrained(
         config["model"]["pretrained_model_path"], device=device
     )
-    pretrained_model_path = Path(config["model"]["pretrained_model_path"])
+
     if config["model"]["preload_ckpt_file"] is not None:
         file_path = (
             Path(config["training"]["ckpt_dir"]) / config["model"]["preload_ckpt_file"]
@@ -28,6 +38,11 @@ def build_and_load_model(config, device: torch.device, build_optimzier: bool = T
         if file_path.exists():
             print(f"Loading model weights from {file_path}")
             model.load_state_dict(torch.load(file_path, weights_only=True))
+    else:
+        print(
+            f"Preload checkpoint file {config['model']['preload_ckpt_file']} does not exist, skipping loading."
+        )
+
     optimizer = None
     if build_optimzier:
         optimizer = MemoryEfficientAdamW(
@@ -54,9 +69,32 @@ def single_step_rollout(
     dtype: torch.dtype,
     config,
 ) -> List[Instance]:
+    """
+    Perform a single step rollout for a batch of questions.
+
+    Args:
+        model: The model to use for the rollout.
+        ref_model: The reference model to use for the rollout.
+        batch: A MiniBatch of questions and context.
+        tokenizer: The tokenizer to use for the rollout.
+        max_gen_len: The maximum length to generate.
+        num_answer_per_question: The number of answers to generate for each question.
+        reward_function: A function to compute the reward for each generated answer.
+        device: The device to use for the rollout.
+        dtype: The dtype to use for the rollout.
+        config: The configuration dictionary.
+
+    Returns:
+        A list of Instance objects with the generated info.
+    """
+    ref_model.to(device)
+    ref_model.eval()
+
     end_token = tokenizer.eos_token
     end_token_id = tokenizer.eos_token_id
     pad_token_id = tokenizer.pad_token_id
+    print("end_token_id:", end_token_id)
+    print("pad_token_id:", pad_token_id)
 
     prefix_token_ids = batch.prefix_token_ids
     question_size = len(batch.prefix_text)
@@ -70,27 +108,26 @@ def single_step_rollout(
         device=device,
         dtype=dtype,
     )
+
     # (B, total_len)
     tokens = torch.full(
         (batch_size, total_len), pad_token_id, dtype=torch.long, device=device
     )
-    # fill the prefix tokens
+
+    # fills the prefix tokens.
     for k, t in enumerate(prefix_token_ids):
-        offset = k * num_answer_per_question
-        for i in range(num_answer_per_question):
-            tokens[offset + i, : len(t)] = torch.tensor(
-                t, dtype=torch.long, device=device
-            )
-    # prefix_token_ids_tensor = [torch.tensor(t, dtype=torch.long, device=device) for t in prefix_token_ids]
-    # for k, t_tensor in enumerate(prefix_token_ids_tensor):
-    #     start = k * num_answer_per_question
-    #     end = start + num_answer_per_question
-    #     tokens[start:end, : t_tensor.size(0)] = t_tensor
+        start = k * num_answer_per_question
+        end = start + num_answer_per_question
+        tokens[start:end, : len(t)] = torch.tensor(t, dtype=torch.long, device=device)
+
+        # offset = k * num_answer_per_question
+        # for i in range(num_answer_per_question):
+        #     tokens[offset + i, : len(t)] = torch.tensor(
+        #         t, dtype=torch.long, device=device
+        #     )
 
     prev_pos = 0
-    # (B, total_len)
-    input_text_mask = tokens != pad_token_id
-    assert min_prefix_token_len < total_len
+    input_text_mask = tokens != pad_token_id  # (B, total_len)
     is_finished = torch.zeros((batch_size,), dtype=torch.bool, device=device)
 
     for cur_pos in range(min_prefix_token_len, total_len):
@@ -100,7 +137,7 @@ def single_step_rollout(
             end="",
         )
         with torch.autocast(device_type=device.type, dtype=dtype):
-            # (B, tgt_len, vocab_size)
+            # Scales it by temperature, (B, tgt_len, vocab_size)
             logits = (
                 model.inference(tokens[:, prev_pos:cur_pos], prev_pos)
                 / config["training"]["temperature"]
@@ -115,14 +152,19 @@ def single_step_rollout(
         next_token = torch.where(
             input_text_mask[:, cur_pos], tokens[:, cur_pos], next_token
         )
-        # if an rollout is finished, we fill the rest of the tokens with pad_token_id
+        # if an rollout is finished, we fill the rest of the tokens with pad_token_id, (B)
         next_token = torch.where(is_finished, pad_token_id, next_token)
-        # (B, total_len)
+        # updates the tokens tensor with the next token, (B, total_len)
         tokens[:, cur_pos] = next_token
         if end_token_id is not None:
             is_end_token = next_token == end_token_id
+            is_pad_token = next_token == pad_token_id
             is_generated_token = ~input_text_mask[:, cur_pos]
-            is_finished = is_finished | (is_end_token & is_generated_token)
+            is_finished = (
+                is_finished
+                | (is_end_token & is_generated_token)
+                | (is_pad_token & is_generated_token)
+            )
         prev_pos = cur_pos
         if is_finished.all():
             break
@@ -188,6 +230,8 @@ def single_step_rollout(
             instances.append(instance)
     # clear the output line
     print("\r", end=" " * 100, flush=True)
+    ref_model.cpu()
+    gc.collect()
     torch.cuda.empty_cache()
     return instances
 
@@ -211,7 +255,7 @@ def normalize_rewards_per_group(instances: List[Instance]) -> List[Instance]:
 
 def get_per_token_entropies_from_logits(logits, chunk_size: int = 1) -> torch.Tensor:
     """
-    Compute the Shannon entropy (in nats) for each row of *logits* without
+    Compute the Shannon entropy for each row of *logits* without
     materialising the full soft-max in memory.
     The batch dimension is processed in chunks of size `chunk_size` so that
     only a subset of rows is expanded to probabilities at any one time.
@@ -243,6 +287,20 @@ def get_per_token_logps_and_entropies(
     compute_entropies: bool = True,
     temperature: float = 1.0,
 ):
+    """
+    Compute the per-token log-probabilities and/or entropies of the given batch.
+
+    Args:
+        model: The model to use for computing the logits.
+        batch_token_ids: The input batch of token ids.
+        pad_token_id: The token id of the padding token.
+        compute_logps: Whether to compute the per-token log-probabilities.
+        compute_entropies: Whether to compute the per-token entropies.
+        temperature: The temperature to use for scaling the logits.
+
+    Returns:
+        A dictionary containing the per-token log-probabilities and/or entropies.
+    """
     per_token_logps = None
     per_token_entropies = None
 
@@ -262,26 +320,11 @@ def get_per_token_logps_and_entropies(
             ignore_index=pad_token_id,
             reduction="none",
         ).reshape(batch_token_ids.shape[0], -1)
+
     return {
         "per_token_logps": per_token_logps,
         "per_token_entropies": per_token_entropies,
     }
-
-
-def compute_entropy(logits: torch.Tensor) -> torch.Tensor:
-    """
-    The formula logsumexp(logits) - sum(probs * logits) is equivalent to the definition of Shannon entropy, H(P) = - sum(P * log(P)), where P is the probability distribution obtained from softmax.
-    Recall that probs = exp(logits) / sum(exp(logits)).
-    Taking the logarithm of probs: log(probs) = logits - log(sum(exp(logits))).
-    The term log(sum(exp(logits))) is equivalent to logsumexp(logits).
-    Substituting into the entropy formula: H(P) = - sum(P * (logits - logsumexp(logits))).
-    H(P) = - sum(P * logits) + sum(P * logsumexp(logits)).
-    Since the sum of probabilities is 1 (sum(P) = 1), the second term simplifies to logsumexp(logits).
-    Thus, H(P) = logsumexp(logits) - sum(P * logits).
-    """
-    probs = torch.nn.functional.softmax(logits, dim=-1)
-    entropy = torch.logsumexp(logits, dim=-1) - torch.sum(probs * logits, dim=-1)
-    return entropy
 
 
 def update_policy(
@@ -293,14 +336,28 @@ def update_policy(
     dtype: torch.dtype,
     config,
 ):
-    """Update the policy using the GRPO algorithm."""
+    """
+    Update the policy using the given instances.
+
+    Args:
+        model: The policy model to update.
+        optimizer: The optimizer to use for updating the policy.
+        instances: The list of instances to use for updating the policy.
+        pad_token_id: The id of the padding token.
+        device: The device to use for updating the policy.
+        dtype: The data type to use for updating the policy.
+        config: The configuration to use for updating the policy.
+
+    Returns:
+        A dictionary containing the loss, gradient norm, and entropy.
+    """
+
     if len(instances) == 0:
         print("No instances to update policy.")
         return {"loss": 0.0, "grad_norm": 0.0, "entropy": 0.0}
 
     instances = normalize_rewards_per_group(instances)
-    # sort instances by token length for efficient (micro-)batching
-    # instances.sort(key=lambda x: len(x.prefix_token_ids) + len(x.generated_token_ids))
+
     num_target_tokens = sum(len(instance.generated_token_ids) for instance in instances)
     entropy = 0.0
     micro_batch_size = config["training"]["micro_batch_size"]

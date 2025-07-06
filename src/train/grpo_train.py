@@ -1,8 +1,7 @@
-
 from pathlib import Path
 from weakref import ref
 import torch
-from src.train.utils import dtype_map
+from src.train.utils import DTYPE_MAP
 from datetime import datetime
 from torch.utils.tensorboard.writer import SummaryWriter
 from torch.utils.data import DataLoader
@@ -14,24 +13,31 @@ import html
 from src.dataset.countdown_ds import CountdownDataset, collate_fn
 from src.models.qwen.qwen2_model import Transformer
 from src.models.grpo.memory_efficient_adam import MemoryEfficientAdamW
-from src.models.grpo.grpo import single_step_rollout, update_policy, build_and_load_model
+from src.models.grpo.grpo import (
+    single_step_rollout,
+    update_policy,
+    build_and_load_model,
+)
 from src.models.grpo.reward import compute_rewards
 from src.evals.countdown_eval import evaluate
 from src.tokenizers.tokenizer import Tokenizer
+
 
 def train(config):
 
     pretrained_model_path = Path(config["model"]["pretrained_model_path"])
     device = torch.device(config["model"]["device"])
 
-    dtype = dtype_map.get(config["model"]["dtype"], torch.bfloat16)
-    
+    dtype = DTYPE_MAP.get(config["model"]["dtype"], torch.bfloat16)
+
     torch.set_default_device(device)
     torch.random.manual_seed(config["training"]["random_seed"])
     BATCH_SIZE = config["training"]["batch_size"]
     NUM_QUESTIONS_PER_BATCH = config["training"]["num_questions_per_batch"]
     NUM_ANSWERS_PER_QUESTION = BATCH_SIZE // NUM_QUESTIONS_PER_BATCH
-    assert NUM_ANSWERS_PER_QUESTION > 0, "BATCH_SIZE must be divisible by NUM_QUESTIONS_PER_BATCH"
+    assert (
+        NUM_ANSWERS_PER_QUESTION > 0
+    ), "BATCH_SIZE must be divisible by NUM_QUESTIONS_PER_BATCH"
 
     current_time = datetime.now().strftime(r"%Y%m%d-%H%M%S")
     tb_writer = SummaryWriter(log_dir=f"{config['training']['log_dir']}/{current_time}")
@@ -56,14 +62,12 @@ def train(config):
     ref_model, _ = build_and_load_model(config, device, False)
     # print(torch.cuda.memory_summary(abbreviated=True))
 
-
     start_time = time.time()
     ckpt_dir = Path(config["training"]["ckpt_dir"])
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
     for step, batch in enumerate(train_dataloader, start=1):
-        ref_model.to(device)
-        ref_model.eval()
+
         instances = single_step_rollout(
             model=model,
             ref_model=ref_model,
@@ -76,12 +80,11 @@ def train(config):
             dtype=dtype,
             config=config,
         )
-        ref_model.cpu()
         torch.cuda.empty_cache()
-        
+
         if config["training"]["skip_unfinished_instances"]:
             instances = [instance for instance in instances if instance.is_finished]
-        
+
         results = update_policy(
             model=model,
             optimizer=optimizer,
@@ -102,7 +105,9 @@ def train(config):
         formatted_reward = [
             instance.reward_info["format_reward"] for instance in instances
         ]
-        answer_reward = [instance.reward_info["answer_reward"] for instance in instances]
+        answer_reward = [
+            instance.reward_info["answer_reward"] for instance in instances
+        ]
         num_finished_instances = sum(instance.is_finished for instance in instances)
         mean_reward = np.mean(reward)
         std_reward = np.std(reward)
@@ -124,7 +129,9 @@ def train(config):
             f"entropy: {entropy:.2f}"
         )
         if step % config["training"]["eval_interval"] == 0:
-            eval_success_rate = evaluate(model, ref_model,tokenizer, device, dtype, config)
+            eval_success_rate = evaluate(
+                model, ref_model, tokenizer, device, dtype, config
+            )
             print(f"\rEval success rate: {eval_success_rate:.2f}" + " " * 100)
             tb_writer.add_scalar("success_rate/eval", eval_success_rate, step)
 
@@ -132,7 +139,7 @@ def train(config):
             # Update the reference model with the current model's state
             ref_model.load_state_dict(model.state_dict())
             print(f"Updated reference model at step {step}")
-  
+
         tb_writer.add_scalar("loss", loss, step)
         tb_writer.add_scalar("mean_reward", mean_reward, step)
         tb_writer.add_scalar("std_reward", std_reward, step)
@@ -144,6 +151,9 @@ def train(config):
         tb_writer.add_scalar("learning_rate", lr, step)
         tb_writer.add_scalar("mean_response_len", mean_response_len, step)
         tb_writer.add_scalar("entropy", entropy, step)
+
+        # sort instances by generated token length for easier viz
+        instances.sort(key=lambda x: len(x.generated_token_ids))
         for i, instance in enumerate(instances):
             # TensorBoard treats text as markdown.
             text = html.escape(instance.full_text)
@@ -157,4 +167,3 @@ def train(config):
             #     {"model_state_dict": model.state_dict(), "optimizer_state_dict": optimizer.state_dict(),"step": step},
             #     output_file)
             print(f"Saved checkpoint to {output_file}")
-
