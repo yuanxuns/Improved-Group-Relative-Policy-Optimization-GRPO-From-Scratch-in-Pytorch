@@ -5,6 +5,7 @@ from src.train.utils import DTYPE_MAP
 from datetime import datetime
 from torch.utils.tensorboard.writer import SummaryWriter
 from torch.utils.data import DataLoader
+import gc
 
 import time
 import numpy as np
@@ -24,14 +25,20 @@ from src.tokenizers.tokenizer import Tokenizer
 
 
 def train(config):
+    """
+    Main training loop for the GRPO algorithm.
+
+    Parameters
+    ----------
+    config : dict
+        A dictionary containing configuration options.
+    """
 
     pretrained_model_path = Path(config["model"]["pretrained_model_path"])
     device = torch.device(config["model"]["device"])
-
     dtype = DTYPE_MAP.get(config["model"]["dtype"], torch.bfloat16)
-
-    torch.set_default_device(device)
     torch.random.manual_seed(config["training"]["random_seed"])
+
     BATCH_SIZE = config["training"]["batch_size"]
     NUM_QUESTIONS_PER_BATCH = config["training"]["num_questions_per_batch"]
     NUM_ANSWERS_PER_QUESTION = BATCH_SIZE // NUM_QUESTIONS_PER_BATCH
@@ -49,7 +56,7 @@ def train(config):
         split="train",
         test_size=config["data"]["test_size"],
     )
-    generator = torch.Generator(device=device)
+    generator = torch.Generator(device="cpu")
     train_dataloader = DataLoader(
         train_dataset,
         shuffle=True,
@@ -67,7 +74,7 @@ def train(config):
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
     for step, batch in enumerate(train_dataloader, start=1):
-
+        # Samples outputs.
         instances = single_step_rollout(
             model=model,
             ref_model=ref_model,
@@ -80,11 +87,13 @@ def train(config):
             dtype=dtype,
             config=config,
         )
+        gc.collect()
         torch.cuda.empty_cache()
 
         if config["training"]["skip_unfinished_instances"]:
             instances = [instance for instance in instances if instance.is_finished]
 
+        # Policy update step.
         results = update_policy(
             model=model,
             optimizer=optimizer,
@@ -94,11 +103,18 @@ def train(config):
             dtype=dtype,
             config=config,
         )
+
         # synchronize CUDA to ensure all operations are complete before measuring time
         torch.cuda.synchronize()
         end_time = time.time()
         duration = end_time - start_time
         start_time = end_time
+
+        # Updates the reference model periodically.
+        if step % config["training"]["ref_model_update_interval"] == 0:
+            # Update the reference model with the current model's state
+            ref_model.load_state_dict(model.state_dict())
+            print(f"Updated reference model at step {step}")
 
         # compute and log important metrics
         reward = [instance.reward for instance in instances]
@@ -128,18 +144,14 @@ def train(config):
             f"mean_response_len: {mean_response_len:.2f}, "
             f"entropy: {entropy:.2f}"
         )
+
+        # logs to TensorBoard
         if step % config["training"]["eval_interval"] == 0:
             eval_success_rate = evaluate(
                 model, ref_model, tokenizer, device, dtype, config
             )
             print(f"\rEval success rate: {eval_success_rate:.2f}" + " " * 100)
             tb_writer.add_scalar("success_rate/eval", eval_success_rate, step)
-
-        if step % config["training"]["ref_model_update_interval"] == 0:
-            # Update the reference model with the current model's state
-            ref_model.load_state_dict(model.state_dict())
-            print(f"Updated reference model at step {step}")
-
         tb_writer.add_scalar("loss", loss, step)
         tb_writer.add_scalar("mean_reward", mean_reward, step)
         tb_writer.add_scalar("std_reward", std_reward, step)
@@ -163,7 +175,4 @@ def train(config):
         if step % config["training"]["ckpt_save_interval"] == 0:
             output_file = ckpt_dir / f"ckpt_{step:06d}.pt"
             torch.save(model.state_dict(), output_file)
-            # torch.save(
-            #     {"model_state_dict": model.state_dict(), "optimizer_state_dict": optimizer.state_dict(),"step": step},
-            #     output_file)
             print(f"Saved checkpoint to {output_file}")

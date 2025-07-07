@@ -120,12 +120,6 @@ def single_step_rollout(
         end = start + num_answer_per_question
         tokens[start:end, : len(t)] = torch.tensor(t, dtype=torch.long, device=device)
 
-        # offset = k * num_answer_per_question
-        # for i in range(num_answer_per_question):
-        #     tokens[offset + i, : len(t)] = torch.tensor(
-        #         t, dtype=torch.long, device=device
-        #     )
-
     prev_pos = 0
     input_text_mask = tokens != pad_token_id  # (B, total_len)
     is_finished = torch.zeros((batch_size,), dtype=torch.bool, device=device)
