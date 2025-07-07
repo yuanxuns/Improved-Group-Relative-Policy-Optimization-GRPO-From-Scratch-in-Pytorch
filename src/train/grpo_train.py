@@ -22,6 +22,7 @@ from src.models.grpo.grpo import (
 from src.models.grpo.reward import compute_rewards
 from src.evals.countdown_eval import evaluate
 from src.tokenizers.tokenizer import Tokenizer
+from src.train.utils import get_device
 
 
 def train(config):
@@ -35,7 +36,7 @@ def train(config):
     """
 
     pretrained_model_path = Path(config["model"]["pretrained_model_path"])
-    device = torch.device(config["model"]["device"])
+    device = get_device()
     dtype = DTYPE_MAP.get(config["model"]["dtype"], torch.bfloat16)
     torch.random.manual_seed(config["training"]["random_seed"])
 

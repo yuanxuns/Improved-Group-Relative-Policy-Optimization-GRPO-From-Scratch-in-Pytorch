@@ -1,7 +1,7 @@
 model:
   pretrained_model_path: "src/weights/Qwen2.5-0.5B-Instruct"
   dtype: "bfloat16"
-  preload_ckpt_file: "ckpt_003400.pt"
+  preload_ckpt_file: None #"ckpt_003400.pt"
 data:
   path: "Countdown-Tasks-3to4/data"
   test_size: 128
@@ -26,9 +26,8 @@ training:
   eval_interval: 10
   ref_model_update_interval: 10
   memory_efficient_adamw: true
-  beta: 0.05
+  beta: 0.01
   eps_low: 0.2
-  eps_high: 0.28
-  temperature: 0.3
-  token_entropy_percentile_threshold: 0.5
-  
+  eps_high: 0.3
+  temperature: 0.5
+  token_entropy_percentile_threshold: 0.2

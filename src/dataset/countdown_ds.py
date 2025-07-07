@@ -12,14 +12,16 @@ SYSTEM_MESSAGE = (
 )
 USER_TEMPLATE = (
     "Using the provided information, answer the question. "
-    "Given a list of numbers {numbers} and the target {target}, you can use the given numbers exactly once (feel free to change the order if needed), and "
-    "freely use the given arithmetic operations: brackets (), addition +, subtraction -, multiplication * and division / to "
-    "create an equation whose outcome equals the target. "
-    "Show your reasoning processes and verifies the answer in <think></think>. "
-    "Return a correct equation "
-    "in <answer> </answer>."
+    "Given a list of three or four numbers {numbers} and the target {target}, "
+    "you use the numbers exactly once to create an equation whose value equals "
+    "the target. Feel free to change the order of numbers if needed, and "
+    "use arithmetic operations: brackets (), addition +, subtraction -, multiplication * and division. "
+    "Show your reasoning processes and verifies the answer in <think></think>, then "
+    "return a correct equation in <answer> </answer>."
 )
-RESPONSE_PROMPT = "Let me solve this step by step. <think>"
+RESPONSE_PROMPT = (
+    "Let me try different combinations and solve this step by step. <think>"
+)
 
 
 @dataclass
