@@ -47,7 +47,25 @@ Traditional policy optimization methods like PPO require a critic network to est
 - Memory-efficient AdamW optimizer
 - If GRPO iteration is one per training step, we can further simplify the loss.
 
-## Training Results
+## Training 
+
+Download the dataset, put it in the src/dataset folder.
+```
+git clone https://huggingface.co/datasets/Jiayi-Pan/Countdown-Tasks-3to4
+```
+
+Download the pretrained Qwen2.5-0.5B model, and put it in the src/ folder
+```
+git clone https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct
+```
+
+Modify the training params in src/config
+
+Train the model
+```
+```
+
+##Results
 
 
 ## References
