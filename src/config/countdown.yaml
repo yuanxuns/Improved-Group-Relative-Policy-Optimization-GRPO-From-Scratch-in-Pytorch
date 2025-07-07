@@ -2,7 +2,7 @@ model:
   pretrained_model_path: "src/weights/Qwen2.5-0.5B-Instruct"
   device: "cuda"
   dtype: "bfloat16"
-  preload_ckpt_file: None #"ckpt_002400.pt"
+  preload_ckpt_file: "ckpt_003400.pt"
 data:
   path: "Countdown-Tasks-3to4/data"
   test_size: 128
@@ -25,12 +25,12 @@ training:
   log_dir: "logs"
   skip_unfinished_instances: true
   ckpt_save_interval: 100
-  eval_interval: 5
+  eval_interval: 10
   ref_model_update_interval: 10
   # save GPU memory by offloading the optimizer states to CPU
   memory_efficient_adamw: true
   beta: 0.05
   eps_low: 0.2
   eps_high: 0.28
-  temperature: 1.1
+  temperature: 0.3
   token_entropy_percentile_threshold: 0.5

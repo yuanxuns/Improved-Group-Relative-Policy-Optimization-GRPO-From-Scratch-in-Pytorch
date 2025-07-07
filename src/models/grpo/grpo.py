@@ -93,8 +93,8 @@ def single_step_rollout(
     end_token = tokenizer.eos_token
     end_token_id = tokenizer.eos_token_id
     pad_token_id = tokenizer.pad_token_id
-    print("end_token_id:", end_token_id)
-    print("pad_token_id:", pad_token_id)
+    # print("end_token_id:", end_token_id)
+    # print("pad_token_id:", pad_token_id)
 
     prefix_token_ids = batch.prefix_token_ids
     question_size = len(batch.prefix_text)
@@ -136,7 +136,7 @@ def single_step_rollout(
             flush=True,
             end="",
         )
-        with torch.autocast(device_type=device.type, dtype=dtype):
+        with torch.no_grad():
             # Scales it by temperature, (B, tgt_len, vocab_size)
             logits = (
                 model.inference(tokens[:, prev_pos:cur_pos], prev_pos)
