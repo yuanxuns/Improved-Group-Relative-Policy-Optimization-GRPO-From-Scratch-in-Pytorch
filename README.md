@@ -43,6 +43,7 @@ Traditional policy optimization methods like PPO require a critic network to est
 - Token-level policy gradient loss from [DAPO](https://arxiv.org/pdf/2503.14476) paper
 - Skips unfinished episodes that exceed context length limits
 - Entropy-based mask
+- Filtered loss on high-entropy minority tokens from [paper](https://arxiv.org/pdf/2506.01939)
 - Memory-efficient AdamW optimizer
 - If GRPO iteration is one per training step, we can further simplify the loss.
 
