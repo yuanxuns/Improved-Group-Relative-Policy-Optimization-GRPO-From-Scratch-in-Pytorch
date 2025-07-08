@@ -38,7 +38,7 @@ Traditional policy optimization methods like PPO require a critic network to est
 - Ideal for preference-based or rule-based reward modeling in LLM fine-tuning.
   
 ## Improved Implementations
-- Training QWEN 0.5B on a single Nvidia3060 12GB GPU
+- Efficiently finetune Qwen0.5B model on a single Nvidia3060 12GB GPU
 - Full parameter tuning
 - Token-level policy gradient loss from [DAPO](https://arxiv.org/pdf/2503.14476) paper
 - Skips unfinished episodes that exceed context length limits
@@ -49,23 +49,31 @@ Traditional policy optimization methods like PPO require a critic network to est
 
 ## Training 
 
-Download the dataset, put it in the src/dataset folder.
+1. Download the dataset, put it in the main directory.
 ```
 git clone https://huggingface.co/datasets/Jiayi-Pan/Countdown-Tasks-3to4
 ```
 
-Download the pretrained Qwen2.5-0.5B model, and put it in the src/ folder
+2. Download the pretrained Qwen2.5-0.5B model, and put it in the src/weights/ folder
 ```
 git clone https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct
 ```
 
-Modify the training params in src/config
-
-Train the model
+3. Modify the training params in
 ```
+src/config/countdown.yaml
 ```
 
-##Results
+4. Train the model
+```
+python run_trpo_train.py
+```
+
+## Results
+
+![Screenshot from 2025-07-07 16-35-02](https://github.com/user-attachments/assets/394475c2-8371-44f8-b383-3f67c0dff8eb)
+
+![Screenshot from 2025-07-07 16-33-56](https://github.com/user-attachments/assets/61bc9cb2-3b20-4e21-b139-8e474230fe3e)
 
 
 ## References
