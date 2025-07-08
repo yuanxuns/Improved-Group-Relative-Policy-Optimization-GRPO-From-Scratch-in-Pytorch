@@ -20,7 +20,8 @@ USER_TEMPLATE = (
     "return a correct equation in <answer> </answer>."
 )
 RESPONSE_PROMPT = (
-    "Let me try different combinations and solve this step by step. <think>"
+    "Let me try different equation combinations to obtain a correct answer. "
+    "I will solve this step by step. <think>"
 )
 
 
