@@ -38,7 +38,7 @@ Traditional policy optimization methods like PPO require a critic network to est
 - Ideal for preference-based or rule-based reward modeling in LLM fine-tuning.
   
 ## Improved Implementations
-- Training QWEN 0.5B on a single Nvidia3060 12GB GPU
+- Efficiently finetune Qwen0.5B model on a single Nvidia3060 12GB GPU
 - Full parameter tuning
 - Token-level policy gradient loss from [DAPO](https://arxiv.org/pdf/2503.14476) paper
 - Skips unfinished episodes that exceed context length limits
